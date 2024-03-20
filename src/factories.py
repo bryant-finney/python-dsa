@@ -8,15 +8,19 @@ from __future__ import annotations
 import random
 import uuid
 from dataclasses import dataclass
-from typing import Any, Iterable, TypeVar
+from typing import Any, Iterable, Literal, TypeVar
 
 import factory as fact
 import petname
-from factory import fuzzy
+import sqlalchemy
+from factory import alchemy, fuzzy
+from sqlalchemy import orm
 
 import models
 
 T = TypeVar('T')
+
+session = orm.scoped_session(orm.sessionmaker())
 
 
 def flatten(list_of_lists: Iterable[list[T]]) -> list[T]:
@@ -27,24 +31,23 @@ def flatten(list_of_lists: Iterable[list[T]]) -> list[T]:
     return flattened
 
 
-class AbstractIdFactory(fact.Factory):
+class BaseFactory(alchemy.SQLAlchemyModelFactory):
     class Meta:
         abstract = True
+        sqlalchemy_session = session
 
-    id = fact.LazyAttribute(lambda _: uuid.uuid4().hex)
+    id = fact.LazyAttribute(lambda _: uuid.uuid4())
 
 
-class AbstractPersonFactory(AbstractIdFactory):
+class PersonFactory(BaseFactory):
+    class Meta:
+        model = models.Person
+
     given_name = fact.Faker('first_name')
     surname = fact.Faker('last_name')
 
 
-class PersonFactory(AbstractPersonFactory):
-    class Meta:
-        model = models.Person
-
-
-class CatFactory(AbstractIdFactory):
+class CatFactory(BaseFactory):
     class Meta:
         exclude = ('_owner',)
         model = models.Cat
@@ -52,21 +55,21 @@ class CatFactory(AbstractIdFactory):
     _owner = fact.SubFactory(PersonFactory)
 
     age = fuzzy.FuzzyInteger(0, 20)
-    color = fuzzy.FuzzyChoice(['black', 'gray', 'orange', 'other'])
+    color = fuzzy.FuzzyChoice(models.Color)
     lives = fuzzy.FuzzyInteger(1, 9)
     name = fact.LazyFunction(petname.name)
 
     owner_id = fact.SelfAttribute('_owner.id')
 
 
-class ClinicFactory(AbstractIdFactory):
+class ClinicFactory(BaseFactory):
     class Meta:
         model = models.Clinic
 
     name = fact.Faker('company')
 
 
-class VeterinarianFactory(AbstractPersonFactory):
+class VeterinarianFactory(PersonFactory):
     class Meta:
         exclude = '_clinic'
         model = models.Veterinarian
@@ -93,7 +96,7 @@ class ClinicWithVeterinariansFactory(ClinicFactory):
         obj.veterinarians = VeterinarianFactory.create_batch(n, _clinic=obj)
 
 
-class AppointmentFactory(fact.Factory):
+class AppointmentFactory(BaseFactory):
     class Meta:
         exclude = ('_cat', '_clinic', '_owner', '_start', '_veterinarian')
         model = models.Appointment
@@ -160,7 +163,7 @@ class ProdDatasetFactory(fact.Factory):
         model = Dataset
 
     cats = fact.LazyAttribute(lambda o: flatten(person.cats for person in o.persons))
-    clinics = fact.LazyAttribute(lambda _: ClinicWithVeterinariansFactory.create_batch(300))
+    clinics = fact.LazyAttribute(lambda _: ClinicWithVeterinariansFactory.create_batch(100))
     persons = fact.LazyAttribute(
         lambda _: PersonWithCatsFactory.create_batch(100_000, post__n_max=30)
     )
@@ -170,6 +173,25 @@ class ProdDatasetFactory(fact.Factory):
 
     appointments = fact.LazyAttribute(
         lambda o: flatten(
-            create_random_appointments(o, random.randint(1, 40), person) for person in o.persons
+            create_random_appointments(o, random.randint(10, 40), person) for person in o.persons
         )
     )
+
+
+def _create_session(db: Literal['test.db', 'prod.db']) -> orm.Session:
+    engine = sqlalchemy.create_engine(f'sqlite:///{db}', echo=True)
+    models.Base.metadata.create_all(engine)
+    session.configure(bind=engine)
+    return session
+
+
+def create_test_db() -> None:
+    session = _create_session('test.db')
+    TestDatasetFactory.create()
+    session.commit()
+
+
+def create_prod_db() -> None:
+    session = _create_session('prod.db')
+    ProdDatasetFactory.create()
+    session.commit()

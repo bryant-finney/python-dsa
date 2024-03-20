@@ -11,6 +11,7 @@ docs/
 # Data
 *.csv*
 *.dat*
+*.db
 *.md5
 *.pickle*
 *.xls*
